@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="bg">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The Bite — Admin</title>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600;700;900&family=Crimson+Text:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
+
+<!-- Firebase -->
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+  import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged }
+    from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+  import { getDatabase, ref, onValue, update, remove }
+    from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyD-U1e7y93fB5C5wfvmu2YU-Q9rqaR-JE8",
+    authDomain: "tapmenucustomer.firebaseapp.com",
+    databaseURL: "https://tapmenucustomer-default-rtdb.europe-west1.firebasedatabase.app",
+    projectId: "tapmenucustomer",
+    storageBucket: "tapmenucustomer.firebasestorage.app",
+    messagingSenderId: "926437550071",
+    appId: "1:926437550071:web:9863e28b98bcfbe776b0f2",
+    measurementId: "G-MR3XHVY4V9"
+  };
+
+  const app  = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+  const db   = getDatabase(app);
+
+  let firstLoad = true;
+
+  // ── AUTH STATE ──
+  onAuthStateChanged(auth, user => {
+    if (user) {
+      document.getElementById('loginWrap').style.display = 'none';
+      document.getElementById('adminWrap').style.display = 'block';
+      document.getElementById('loginError').style.display = 'none';
+      document.getElementById('loginPass').value = '';
+      startListening();
+    } else {
+      document.getElementById('loginWrap').style.display = 'flex';
+      document.getElementById('adminWrap').style.display = 'none';
+      firstLoad = true;
+    }
+  });
+
+  // ── LOGIN / LOGOUT ──
+  window.doLogin = async function() {
+    const email = document.getElementById('loginUser').value.trim();
+    const pass  = document.getElementById('loginPass').value;
+    const btn   = document.getElementById('loginBtn');
+    const err   = document.getElementById('loginError');
+    btn.disabled = true; btn.textContent = 'Signing in…'; err.style.display = 'none';
+    try {
+      await signInWithEmailAndPassword(auth, email, pass);
+    } catch(e) {
+      err.style.display = 'block'; btn.disabled = false; btn.textContent = 'Sign In';
+    }
+  };
+
+  window.doLogout = async function() {
+    await signOut(auth);
+    document.getElementById('loginUser').value = '';
+  };
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && document.getElementById('loginWrap').style.display !== 'none') window.doLogin();
+  });
+
+  // ── REALTIME LISTENER ──
+  function startListening() {
+    const ordersRef = ref(db, 'orders');
+    onValue(ordersRef, snapshot => {
+      const data = snapshot.val() || {};
+      const orders = Object.entries(data).map(([key, val]) => ({ ...val, _key: key }));
+      // Sort: pending first, then by timestamp desc
+      orders.sort((a, b) => {
+        if (a.done !== b.done) return a.done ? 1 : -1;
+        return b.timestamp - a.timestamp;
+      });
+
+      if (!firstLoad && orders.length > window._lastOrderCount) {
+        showNotif();
+      }
+      window._lastOrderCount = orders.length;
+      firstLoad = false;
+
+      renderOrders(orders);
+    });
+  }
+
+  // ── ACTIONS ──
+  window.markDone = async function(key) {
+    await update(ref(db, `orders/${key}`), { done: true });
+  };
+
+  window.deleteOrder = async function(key) {
+    await remove(ref(db, `orders/${key}`));
+  };
+
+  window.clearDone = async function() {
+    const ordersRef = ref(db, 'orders');
+    const { get } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js");
+    const snap = await get(ordersRef);
+    const data = snap.val() || {};
+    const promises = Object.entries(data)
+      .filter(([, v]) => v.done)
+      .map(([k]) => remove(ref(db, `orders/${k}`)));
+    await Promise.all(promises);
+  };
+</script>
+
+<link rel="stylesheet" href="admin-styles.css">
+</head>
+<body>
+
+<!-- ══ LOGIN ══ -->
+<div class="login-wrap" id="loginWrap">
+  <div class="login-box">
+    <div class="login-logo">TheBite≈</div>
+    <div class="login-sub">Admin Panel</div>
+    <input class="login-field" id="loginUser" type="email" placeholder="Email" autocomplete="email" />
+    <input class="login-field" id="loginPass" type="password" placeholder="Password" autocomplete="current-password" />
+    <button class="login-btn" id="loginBtn" onclick="doLogin()">Sign In</button>
+    <div class="login-error" id="loginError">Invalid email or password</div>
+  </div>
+</div>
+
+<!-- ══ DASHBOARD ══ -->
+<div class="admin-wrap" id="adminWrap">
+  <div class="admin-header">
+    <div>
+      <div class="admin-title">TheBite≈ <span>Orders</span></div>
+    </div>
+    <div class="header-actions">
+      <span class="badge" id="pendingBadge">0 pending</span>
+      <button class="clear-btn" onclick="clearDone()">Clear done</button>
+      <button class="logout-btn" onclick="doLogout()">Sign out</button>
+    </div>
+  </div>
+  <div class="admin-body">
+    <div class="orders-empty" id="ordersEmpty">No orders yet. Waiting...</div>
+    <div id="ordersList"></div>
+  </div>
+</div>
+
+<!-- ══ NOTIFICATION ══ -->
+<div class="notif" id="notif">🍽️ New order received!</div>
+
+<script>
+function renderOrders(orders) {
+  const list  = document.getElementById('ordersList');
+  const empty = document.getElementById('ordersEmpty');
+  const badge = document.getElementById('pendingBadge');
+
+  const pending = orders.filter(o => !o.done).length;
+  badge.textContent = `${pending} pending`;
+
+  if (orders.length === 0) {
+    empty.style.display = 'block';
+    list.innerHTML = '';
+    return;
+  }
+
+  empty.style.display = 'none';
+  list.innerHTML = '';
+
+  orders.forEach(order => {
+    const card = document.createElement('div');
+    card.className = 'order-card' + (order.done ? ' done' : ' new-order');
+
+    const time     = new Date(order.timestamp).toLocaleTimeString('bg-BG', { hour:'2-digit', minute:'2-digit' });
+    const date     = new Date(order.timestamp).toLocaleDateString('bg-BG');
+    const totalEur = (order.total / 1.95583).toFixed(2);
+
+    const itemsHtml = (order.items || []).map(item => {
+      const lineTotal = item.price * item.qty;
+      return `<div class="order-item-row">
+        <span class="order-item-name">${item.name}</span>
+        <span class="order-item-qty">x${item.qty}</span>
+        <span class="order-item-price">${lineTotal.toFixed(2)} лв.</span>
+      </div>`;
+    }).join('');
+
+    const noteHtml = order.note && order.note !== 'Няма' && order.note !== 'None'
+      ? `<div class="order-note">📝 ${order.note}</div>` : '';
+
+    card.innerHTML = `
+      <div class="order-card-header">
+        <div>
+          <div class="order-table">Маса ${order.table}</div>
+          <div class="order-time">${date} — ${time}</div>
+        </div>
+        <div class="order-status">
+          <div class="status-dot"></div>
+          <span class="status-label">${order.done ? 'Done' : 'Pending'}</span>
+        </div>
+      </div>
+      <div class="order-card-body">
+        <div class="order-items">${itemsHtml}</div>
+        <div class="order-total-row">
+          <span class="order-total-label">Total</span>
+          <span class="order-total-value">${order.total.toFixed(2)} лв.<span class="order-total-eur">(${totalEur} €)</span></span>
+        </div>
+        ${noteHtml}
+      </div>
+      <div class="order-card-footer">
+        <button class="delete-btn" onclick="deleteOrder('${order._key}')">Delete</button>
+        <button class="done-btn" onclick="markDone('${order._key}')" ${order.done ? 'disabled' : ''}>
+          ${order.done ? '✓ Done' : 'Mark as done'}
+        </button>
+      </div>`;
+
+    list.appendChild(card);
+  });
+}
+
+function showNotif() {
+  const n = document.getElementById('notif');
+  n.classList.add('show');
+  setTimeout(() => n.classList.remove('show'), 4000);
+}
+
+window._lastOrderCount = 0;
+</script>
+</body>
+</html>
